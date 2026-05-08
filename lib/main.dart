@@ -249,6 +249,14 @@ class _SplashScreenState extends State<SplashScreen>
 }
 
 // ─────────────────────────────────────────────
+// API CONFIG (GLOBAL - NOT INSIDE WIDGET)
+// ─────────────────────────────────────────────
+class ApiConfig {
+  static const String baseUrl = 'https://ml-url-api.onrender.com';
+  static Uri get predictUri => Uri.parse('$baseUrl/predict');
+}
+
+// ─────────────────────────────────────────────
 // 2. SCANNER SCREEN
 // ─────────────────────────────────────────────
 class QRScannerScreen extends StatefulWidget {
@@ -263,8 +271,6 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
   bool isAnalyzing = false;
   bool isProcessingPayment = false;
   final MobileScannerController cameraController = MobileScannerController();
-
-  static const String apiUrl = 'https://ml-url-api.onrender.com/predict';
 
   void _onScanSuccess() {
     HapticFeedback.mediumImpact();
@@ -295,7 +301,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     try {
       final response = await http
           .post(
-            Uri.parse(apiUrl),
+            ApiConfig.predictUri,
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'url': url}),
           )
