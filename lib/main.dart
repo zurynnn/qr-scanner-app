@@ -109,7 +109,6 @@ class BlockedUrlsHelper {
     if (!blocked.contains(url)) {
       blocked.add(url);
       await prefs.setStringList(_blockedKey, blocked);
-      print('✅ Blocked: $url'); // For debugging
     }
   }
   
@@ -289,7 +288,25 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     return false;
   }
 
+    bool _isSafeUrl(String url) {
+      final trimmed = url.trim().toLowerCase();
+      
+      // Block dangerous schemes
+      const dangerous = ['javascript:', 'data:', 'vbscript:', 'file:', 'content:'];
+      for (final scheme in dangerous) {
+        if (trimmed.startsWith(scheme)) return false;
+      }
+      
+      // Must be http or https
+      return trimmed.startsWith('http://') || trimmed.startsWith('https://');
+    }
+
   Future<void> _analyzeUrl(String url) async {
+    if (!_isSafeUrl(url)) {
+      _showErrorSnackBar('Invalid or unsafe URL format.');
+      return;
+    }
+    
       // Check if URL is already blocked
     if (await BlockedUrlsHelper.isBlocked(url)) {
       _showErrorSnackBar('This URL has been blocked. Cannot analyze again.');
@@ -324,7 +341,12 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         _showErrorSnackBar('Server error: ${response.statusCode}');
       }
     } catch (e) {
-      if (mounted) _showErrorSnackBar('Could not reach server. Check your connection.');
+      if (mounted) {
+        final msg = e.toString().contains('TimeoutException')
+            ? 'Request timed out. Server may be slow, try again.'
+            : 'Could not reach server. Check your connection.';
+        _showErrorSnackBar(msg);
+      }
     } finally {
       if (mounted) setState(() => isAnalyzing = false);
     }
@@ -879,7 +901,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
         _loading = false;
       });
     } catch (e) {
-      debugPrint("❌ Error loading history: $e");
       setState(() => _loading = false);
     }
   }
