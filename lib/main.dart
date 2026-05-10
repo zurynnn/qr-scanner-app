@@ -329,6 +329,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final String result = data['result'];
+        final String finalUrl = data['final_url'] ?? url;
 
         if (result == 'Invalid URL') {
           _showErrorSnackBar('This QR code does not contain a valid URL.');
@@ -336,7 +337,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         }
 
         await ScanHistoryHelper.saveEntry(url, result, isBlocked: false);
-        _showResultSheet(url, result);
+        _showResultSheet(url, finalUrl, result);
       } else {
         _showErrorSnackBar('Server error: ${response.statusCode}');
       }
@@ -403,26 +404,26 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     }
   }
 
-  void _showResultSheet(String url, String result) {
+  void _showResultSheet(String originalUrl, String finalUrl, String result) {
     final bool isMalicious = result == 'Malicious';
+    final bool wasShortened = originalUrl != finalUrl;
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _ResultSheet(
-        url: url,
+        url: finalUrl,
+        originalUrl: wasShortened ? originalUrl : null,
         isMalicious: isMalicious,
         onClose: () {
           Navigator.pop(context);
           setState(() => scannedResult = null);
         },
-        onBlock: isMalicious ? () => _blockAndDismiss(url) : null,  // ← ADD THIS LINE
-        onOpen: isMalicious
-            ? null
-            : () async {
+        onBlock: isMalicious ? () => _blockAndDismiss(finalUrl) : null,
+        onOpen: isMalicious ? null : () async {
                 Navigator.pop(context);
-                final uri = Uri.tryParse(url);
+                final uri = Uri.tryParse(finalUrl);
                 if (uri != null && await canLaunchUrl(uri)) {
                   await launchUrl(uri, mode: LaunchMode.externalApplication);
                 }
@@ -1155,6 +1156,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 // ─────────────────────────────────────────────
 class _ResultSheet extends StatelessWidget {
   final String url;
+  final String? originalUrl;
   final bool isMalicious;
   final VoidCallback onClose;
   final VoidCallback? onBlock;
@@ -1162,6 +1164,7 @@ class _ResultSheet extends StatelessWidget {
 
   const _ResultSheet({
     required this.url,
+    this.originalUrl,
     required this.isMalicious,
     required this.onClose,
     this.onBlock,
@@ -1235,13 +1238,45 @@ class _ResultSheet extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: color.withValues(alpha:0.2)),
             ),
-            child: Text(
-              url,
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      if (originalUrl != null) ...[
+        Text(
+          'Short URL',
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
           ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          originalUrl!,
+          style: const TextStyle(color: Colors.white38, fontSize: 12),
+        ),
+        const Divider(color: Colors.white12, height: 20),
+        Text(
+          'Resolved URL',
+          style: TextStyle(
+            color: Colors.white60,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 4),
+      ],
+      Text(
+        url,
+        style: const TextStyle(color: Colors.white70, fontSize: 13),
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+      ),
+    ],
+  ),
+),
           const SizedBox(height: AppSpacing.lg),
           // Action buttons
           if (!isMalicious && onOpen != null)
