@@ -7,6 +7,11 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+const String BASE_URL = String.fromEnvironment(
+  'BASE_URL',
+  defaultValue: 'https://ml-url-api.onrender.com',
+);
+
 // Design System Constants
 class AppSpacing {
   static const double xs = 4;
@@ -56,9 +61,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────
 // HISTORY HELPER — save/load from device
-// ─────────────────────────────────────────────
 class ScanHistoryHelper {
   static const String _key = 'scan_history';
 
@@ -97,9 +100,7 @@ class ScanHistoryHelper {
   }
 }
 
-// ─────────────────────────────────────────────
 // BLOCKED URLS HELPER — blocklist
-// ─────────────────────────────────────────────
 class BlockedUrlsHelper {
   static const String _blockedKey = 'blocked_urls';
   
@@ -129,11 +130,23 @@ class BlockedUrlsHelper {
     blocked.remove(url);
     await prefs.setStringList(_blockedKey, blocked);
   }
+
+  static Future<void> updateHistoryAfterUnblock(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> raw = prefs.getStringList('scan_history') ?? [];
+
+    final updated = raw.map((e) {
+      final map = jsonDecode(e) as Map<String, dynamic>;
+      if (map['url'] == url) {
+        map['isBlocked'] = false;
+      }
+      return jsonEncode(map);
+    }).toList();
+
+    await prefs.setStringList('scan_history', updated);
+  }
 }
 
-// ─────────────────────────────────────────────
-// 1. SPLASH SCREEN
-// ─────────────────────────────────────────────
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -247,17 +260,11 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-// ─────────────────────────────────────────────
-// API CONFIG (GLOBAL - NOT INSIDE WIDGET)
-// ─────────────────────────────────────────────
+// Central configuration for backend API endpoints
 class ApiConfig {
-  static const String baseUrl = 'https://ml-url-api.onrender.com';
-  static Uri get predictUri => Uri.parse('$baseUrl/predict');
+  static Uri get predictUri => Uri.parse('$BASE_URL/predict');
 }
 
-// ─────────────────────────────────────────────
-// 2. SCANNER SCREEN
-// ─────────────────────────────────────────────
 class QRScannerScreen extends StatefulWidget {
   const QRScannerScreen({super.key});
 
@@ -269,6 +276,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
   String? scannedResult;
   bool isAnalyzing = false;
   bool isProcessingPayment = false;
+  DateTime? lastScanTime;
   final MobileScannerController cameraController = MobileScannerController();
 
   void _onScanSuccess() {
@@ -281,6 +289,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     super.dispose();
   }
 
+  // Detects payment QR codes
   bool _isPaymentQR(String raw) {
     if (raw.startsWith('000201')) return true;
     if (raw.startsWith('00020') && raw.length > 20 && !raw.startsWith('http')) return true;
@@ -288,6 +297,8 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     return false;
   }
 
+    // Validates URL format and blocks unsafe schemes
+    // Prevents execution of malicious or non-HTTP URLs
     bool _isSafeUrl(String url) {
       final trimmed = url.trim().toLowerCase();
       
@@ -301,6 +312,11 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       return trimmed.startsWith('http://') || trimmed.startsWith('https://');
     }
 
+    String _extractDomain(String url) {
+      final uri = Uri.tryParse(url);
+      return uri?.host.toLowerCase() ?? url.toLowerCase();
+    }
+
   Future<void> _analyzeUrl(String url) async {
     if (!_isSafeUrl(url)) {
       _showErrorSnackBar('Invalid or unsafe URL format.');
@@ -308,7 +324,8 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     }
     
       // Check if URL is already blocked
-    if (await BlockedUrlsHelper.isBlocked(url)) {
+    final domain = _extractDomain(url);  
+    if (await BlockedUrlsHelper.isBlocked(domain)) {
       _showErrorSnackBar('This URL has been blocked. Cannot analyze again.');
       return;
     }
@@ -346,7 +363,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         final msg = e.toString().contains('TimeoutException')
             ? 'Request timed out. Server may be slow, try again.'
             : 'Could not reach server. Check your connection.';
-        _showErrorSnackBar(msg);
+        _showRetryDialog(url, msg);
       }
     } finally {
       if (mounted) setState(() => isAnalyzing = false);
@@ -355,7 +372,8 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
 
   Future<void> _blockAndDismiss(String url) async {
   // Add to blocklist
-  await BlockedUrlsHelper.addToBlocklist(url);
+  final domain = _extractDomain(url);
+  await BlockedUrlsHelper.addToBlocklist(domain);
   
   //Save to history with blocked status
   await ScanHistoryHelper.saveEntry(url, 'Blocked', isBlocked: true);
@@ -582,25 +600,36 @@ Widget build(BuildContext context) {
         MobileScanner(
           controller: cameraController,
           onDetect: (capture) {
+            final now = DateTime.now();
+
+            if (lastScanTime != null &&
+                now.difference(lastScanTime!) < const Duration(seconds: 2)) {
+              return; // Ignore spam scans
+            }
+
             if (scannedResult != null || isAnalyzing) return;
+
             for (final barcode in capture.barcodes) {
               final raw = barcode.rawValue;
               if (raw != null) {
+                lastScanTime = now;
+
                 if (_isPaymentQR(raw)) {
                   if (!isProcessingPayment) {
                     _showPaymentQRDialog();
                   }
                   return;
                 }
+
                 setState(() => scannedResult = raw);
                 _onScanSuccess();
                 break;
               }
             }
           },
+          
         ),
-        
-        // Dark overlay outside scanning area
+
         _buildDarkOverlay(),
         
         // Scanner corners
@@ -611,7 +640,7 @@ Widget build(BuildContext context) {
         
         // Control buttons
         Positioned(
-          bottom: 120,  // Moved up to make room for gallery text button
+          bottom: 120,  
           left: 0,
           right: 0,
           child: _buildFlashButton(),
@@ -635,7 +664,6 @@ Widget build(BuildContext context) {
   );
 }
 
-// New: Scan guide text
 Widget _buildScanGuideText() {
   return Positioned(
     bottom: 200,
@@ -653,7 +681,6 @@ Widget _buildScanGuideText() {
   );
 }
 
-// Flash button only (centered)
 Widget _buildFlashButton() {
   return Center(
     child: Container(
@@ -671,7 +698,6 @@ Widget _buildFlashButton() {
   );
 }
 
-// Gallery as text button 
 Widget _buildGalleryButton() {
   return Center(
     child: TextButton.icon(
@@ -848,6 +874,35 @@ Widget _buildGalleryButton() {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showRetryDialog(String url, String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: const Text('Connection Error',
+            style: TextStyle(color: Colors.white)),
+        content: Text(
+          message,
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _analyzeUrl(url);
+            },
+            child: const Text('Retry',
+                style: TextStyle(color: Colors.deepPurple)),
+          ),
+        ],
       ),
     );
   }
@@ -1137,6 +1192,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     if (confirm == true && mounted) {
       await BlockedUrlsHelper.removeFromBlocklist(url);
+      await BlockedUrlsHelper.updateHistoryAfterUnblock(url);
       
       // Update the history entry to remove blocked status
       // Reload history to refresh the display
@@ -1331,9 +1387,7 @@ class _ResultSheet extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────
-// 5. SCANNER CORNERS PAINTER 
-// ─────────────────────────────────────────────
+// Draws corner indicators to guide QR code positioning
 class ScannerCornersPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -1357,9 +1411,6 @@ class ScannerCornersPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 } 
 
-// ─────────────────────────────────────────────
-// 6. SCANNER OVERLAY PAINTER (Dark outside area)
-// ─────────────────────────────────────────────
 class ScannerOverlayPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -1383,9 +1434,7 @@ class ScannerOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-// ─────────────────────────────────────────────
-// 7. SHIMMER LOADING EFFECT
-// ─────────────────────────────────────────────
+// Simple shimmer-style animation used during loading states
 class ShimmerLoading extends StatefulWidget {
   final Widget child;
   
