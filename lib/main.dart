@@ -139,7 +139,13 @@ class BlockedUrlsHelper {
       final map = jsonDecode(e) as Map<String, dynamic>;
       if (map['url'] == url) {
         map['isBlocked'] = false;
+
+        // Restore original status
+        if (map['result'] == 'Blocked') {
+          map['result'] = 'Malicious';
+        }
       }
+      
       return jsonEncode(map);
     }).toList();
 
@@ -312,9 +318,13 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       return trimmed.startsWith('http://') || trimmed.startsWith('https://');
     }
 
-    String _extractDomain(String url) {
-      final uri = Uri.tryParse(url);
-      return uri?.host.toLowerCase() ?? url.toLowerCase();
+    String normalizeDomain(String url) {
+      try {
+        String domain = Uri.parse(url).host.toLowerCase();
+        return domain.startsWith('www.') ? domain.substring(4) : domain;
+      } catch (e) {
+        return url.toLowerCase();
+      }
     }
 
   Future<void> _analyzeUrl(String url) async {
@@ -324,7 +334,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     }
     
       // Check if URL is already blocked
-    final domain = _extractDomain(url);  
+    final domain = normalizeDomain(url);  
     if (await BlockedUrlsHelper.isBlocked(domain)) {
       _showErrorSnackBar('This URL has been blocked. Cannot analyze again.');
       return;
@@ -372,11 +382,15 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
 
   Future<void> _blockAndDismiss(String url) async {
   // Add to blocklist
-  final domain = _extractDomain(url);
+  final domain = normalizeDomain(url);
   await BlockedUrlsHelper.addToBlocklist(domain);
   
   //Save to history with blocked status
-  await ScanHistoryHelper.saveEntry(url, 'Blocked', isBlocked: true);
+  await ScanHistoryHelper.saveEntry(
+    url,
+    'Malicious',   // keep original result
+    isBlocked: true,
+  );
 
   // Show confirmation
   _showErrorSnackBar('⚠️ URL blocked.');
@@ -1191,7 +1205,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
 
     if (confirm == true && mounted) {
-      await BlockedUrlsHelper.removeFromBlocklist(url);
+      final domain = Uri.parse(url).host.toLowerCase();
+
+      await BlockedUrlsHelper.removeFromBlocklist(domain);
       await BlockedUrlsHelper.updateHistoryAfterUnblock(url);
       
       // Update the history entry to remove blocked status
